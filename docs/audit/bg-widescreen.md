@@ -92,13 +92,80 @@ DISPCNT como discriminador campo/menu. Câmera travada dentro de salas
 (hofs 0/1), margens = borda repetida da mesma sala em wrap; sprites
 (c/ X com sinal de 9 bits) continuam visíveis nas margens.
 
-## Fase 3 (roadmap margens autorais)
+## Fase 4 (v4): canvas da sala como fonte das margens — implementado
 
-Margem com conteúdo do **mundo vizinho** (grafo de portas do KAM:
-salas conectadas por teleporte, não por adjacência em memória):
-1. RE da rotina de desenho de metatiles (equiv. `DrawMetatileAt` do
-   FireRed) e dos buffers residentes da sala;
-2. adaptar o modelo do `ws_sidecar` (anel slot↔tile-mundo + cache
-   estendido 64x32 + `g_ws_tilemap_provider`);
-3. materializar salas vizinhas chamando a própria rotina do guest em
-   scratch IWRAM (tail `0x03006CC4..0x03008000`, ~5,3 KB).
+Descoberta que substitui o roadmap da fase 3: **existe um canvas da sala
+em EWRAM** e o jogo o copia *verbatim* para o anel do screenblock. Não
+precisa materializar sala vizinha nem RE de metatiles: as margens largas
+podem ler o canvas diretamente, host-side, sem hook de código guest.
+
+### O modelo (provado ao vivo)
+
+O copier guest `sub_08153184` (`katam/src/bg.c`) preenche o anel do
+screenblock **verbatim** (DMA, único XOR é de flip-bits) a partir do
+canvas de cada `struct Background`. Logo: entries do anel = entries do
+canvas, sem tile-delta e sem tradução de ids. Mapeamento verificado na
+sala do hub (31/31 tiles conferindo, scroll=(248,168), canvas 62×46 @
+0x02028ee0):
+
+```
+anel grid (row k, col c) == canvas (scrollY>>3 + k, scrollX>>3 + c)
+```
+
+`struct Background` (bloco `kBackgrounds` = `gCurLevelInfo[0].unkC0`,
+stride `0x40` = `LevelInfo+0xC0`; os 3 structs vivem fixos em
+0x020235f0 / 0x02023630 / 0x02023670):
+
+| Off | Campo | Uso no plugin |
+|---|---|---|
+| +0x10 | src ptr | canvas da camada (EWRAM ou ROM) |
+| +0x14/+0x16 | stride/h | cw/ch do canvas |
+| +0x22/+0x24 | unk22/unk24 | col/row destino no anel (usados no verify) |
+| +0x28 | unk28 | linhas copiadas no último pass |
+| +0x2E | flags | `flags&3` = camada HW que o struct alimenta; bit 0x40 = canvas em chunks → skip |
+| +0x30/+0x32 | scrollX/Y | origem do anel no canvas |
+| +0x34/+0x36 | prevScroll | detecção de mudança |
+
+**Bindings reais** (não são `layer*0x40`!): struct[0]→BG2 (src=
+0xffffffff, staging sem uso — BG2 desligada no DISPCNT), struct[1]→**BG3
+= camada do mundo** (canvas fg, prio 2), struct[2]→BG0 (nuvens ROM
+30×30, parallax), BG1 sem struct (fallback wrap).
+
+### Implementação (`src/mod_widescreen.cpp`)
+
+- `WideCanvas`/`Calib`: bindings lidos por frame com validação
+  (src≠0/≠0xffffffff, cw/ch ≤ 256, sem flag 0x40) e
+  `verify_ring_binding()` compara uma amostra do anel (VRAM) com o
+  canvas usando os próprios unk22/24 — falha-fechada (≥75% das amostras
+  não-zero). Re-arm por `gf_VBlankIntr` a cada mudança de sala: BG3
+  UNARMED→ARMED confirmado entrando do hub (62×46) no corredor de
+  floresta (172×26).
+- **Provider 100% cache-only**: `refresh_frame_cache()` no VBlank
+  materializa a banda do canvas (caps `kBandColsCap=256`,
+  `kBandRowsCap=21`); o provider NUNCA chama o bus no render (bug de
+  reentrância provider→bus→render já fixado por esse cache).
+- **Margens além da borda do canvas espelham os últimos tiles**
+  (reflexo) em vez de clamp de coluna única.
+- `opts.max_view_width` = 896 (opções 896/608/426/304/284/240);
+  `gba::g_ws_authored_margin_layers = 0xF` ao ativar (0 no reset).
+- BG0/nuvens (ROM): `verify FAIL` persiste (bus de ROM no canvas devolve
+  0 na amostragem); fallback = wrap — aceitável, nuvens repetem a cada
+  256px naturalmente.
+
+### Suportes ao vivo (validados com o emulador --tcp)
+
+- Hub 62×46: margens contínuas nos dois lados, pan horizontal coeso,
+  espelho coincidente com a arquitetura (arco de porta espelhado lê-se
+  como decoração); topo do castelo com arquitetura continuando.
+- Corredor 172×26 (macete de acesso: teleporte do Kirby
+  `gKirbys[0].base.x/y` @ 0x02020F20/24, escala `<<8`, caminhar + UP):
+  896px de floresta real além dos 240px nativos, BG3 re-armado
+  (canvas 172×26), pan contínuo em 4 screenshots.
+
+### Roadmap restante
+
+- grafo de portas (`doorsIdx` @ RoomProps+0x24) p/ margens do "mundo
+  vizinho" e teleporte/salas estreitas;
+- wide vertical (API `extra_top_/bottom_` existe sem acesso do plugin);
+- netplay 2–4P;
+- mundos criados com flag 0x40 (canvas em chunks) hoje caem no fallback.

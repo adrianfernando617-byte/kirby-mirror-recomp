@@ -48,7 +48,9 @@ int main(int argc, char** argv) {
     // catalog cannot load, and let feature state beat stale config/CLI.
     opts.mod_owns_adaptive_view = true;
     // Capability ceiling for trusted view plugins (see src/mod_widescreen.cpp).
-    opts.max_view_width = 304;
+    // 896 = engine storage limit (240 native + 2*328 margins); rooms with
+    // wide canvases (up to 242 tiles = 1936px) supply real content.
+    opts.max_view_width = 896;
     opts.launcher_region    = "USA";
     opts.launcher_game_config = "game.toml";
 

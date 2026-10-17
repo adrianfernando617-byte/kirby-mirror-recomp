@@ -53,91 +53,227 @@ constexpr uint32_t kBgScrollYOff = 0x30u;
 constexpr uint32_t kVBlankIntrPc = 0x08152388u;  // gf_VBlankIntr entry
 
 constexpr int kDefaultWidth = 304;
-constexpr int kMaxWidth = 304;
+constexpr int kMaxWidth = 896;  // engine ceiling: kMaxRenderWidth = 240 + 2*328
 constexpr int kNativeWidth = 240;
 
-// Candidate calibration deltas: canvas tile id + delta = VRAM tile id.
-constexpr uint16_t kTileDeltas[] = {0x000u, 0x100u, 0x200u, 0x300u,
-                                    0x400u, 0x600u, 0x800u};
+// Candidate calibration deltas removed in v4 (verbatim DMA model).
 
 enum class MarginMode { kWrap, kClamp, kBlack, kWide };
 
-// ── per-layer wide state ────────────────────────────────────────────
+// ── struct-Binding model (v4) ───────────────────────────────────────
+// sub_08153184 (the guest copier) fills the DISPLAYED screenblock ring
+// verbatim (DMA, flip-XOR aside) from each struct Background's own
+// source canvas. struct Background (gCurLevelInfo.unkC0[3], stride 0x40):
+//   +0x10 source pointer (EWRAM decoded canvas or ROM matrix)
+//   +0x14 source stride in tiles   +0x16 source height in tiles
+//   +0x2E flags — flags&3 = hardware BG layer this struct feeds
+//   +0x30 scrollX, +0x32 scrollY (pixels; the ring's page origin)
+// Ring grid (row k, col c) == canvas (scrollY>>3 + k, scrollX>>3 + c),
+// entries verbatim, no tile-id delta (verified live in-room: 31/31).
 struct WideCanvas {
     uint16_t width;    // tiles
     uint16_t height;   // tiles
-    uint32_t tilemap;  // guest address of the decoded tilemap, row-major
+    uint32_t tilemap;  // guest address of the decoded canvas, row-major
 };
 
 struct Calib {
     bool armed;
     WideCanvas canvas;
-    uint16_t tile_delta;  // canvas tile id + delta = VRAM tile id
 };
+
+// struct flags that switches the copier to a CHUNK-TABLE source layout
+// (canvas cut into 32-col pages): flat slicing would be wrong there.
+constexpr uint16_t kFlagChunked = 0x0040u;
 
 static Calib g_calibs[4];   // per hardware BG layer
 static MarginMode g_mode = MarginMode::kWrap;
 static int g_left = 0;      // native X=0 within the extended canvas
-
-WideCanvas read_canvas(uint32_t base) {
-    WideCanvas c{};
-    c.width = static_cast<uint16_t>(bus_read_u16(base));
-    c.height = static_cast<uint16_t>(bus_read_u16(base + 2u));
-    c.tilemap = bus_read_u32(base + 0x18u);
-    if (c.width == 0u || c.width > 256u || c.height > 256u || c.height == 0u)
-        c.width = c.height = 0;  // invalid / unset canvas
-    return c;
-}
+bool g_ws_debug = false;    // diagnostics gate (env GBARECOMP_WS_DEBUG)
 
 uint16_t canvas_tile_at(const WideCanvas& c, int col, int row) {
     if (c.width == 0u || c.tilemap == 0u) return 0u;
-    const int wrap_col = ((col % static_cast<int>(c.width)) +
-                          static_cast<int>(c.width)) % static_cast<int>(c.width);
-    const int wrap_row = ((row % static_cast<int>(c.height)) +
-                          static_cast<int>(c.height)) % static_cast<int>(c.height);
+    const int clamp_col = (col < 0) ? 0 :
+        (col >= static_cast<int>(c.width) ? static_cast<int>(c.width) - 1 : col);
     return bus_read_u16(c.tilemap +
-                        2u * static_cast<uint32_t>(wrap_row * c.width + wrap_col));
+        2u * static_cast<uint32_t>(row * c.width + clamp_col));
 }
 
-// Attempt to arm one hardware layer against one canvas. Returns the tile
-// delta via *out_delta on success.
-bool calibrate_layer(uint8_t layer, const WideCanvas& canvas,
-                     uint16_t* out_delta) {
-    if (canvas.width == 0u || canvas.height == 0u || canvas.tilemap == 0u)
-        return false;
+// Verify that the hardware layer's ring really holds this canvas at the
+// page origin (fail closed: a wrong scene must not leak into margins).
+// The struct preserves the last copy's placement: dest ring window starts
+// at (unk24, unk22) with extent (unk26 cols?, unk28 rows), mapping
+// ring rows [unk24+k] == canvas rows [(prevScrollY>>3) + k - unk24].
+bool verify_ring_binding(uint8_t layer, const WideCanvas& canvas,
+                         uint16_t scroll_x, uint16_t scroll_y,
+                         uint16_t d_row, uint16_t d_col) {
     const uint16_t cnt = bus_read_u16(kRegBgcnt + 2u * layer);
-    if (((cnt >> 14) & 3u) != 0u) return false;  // BG size 0 (32x32) only
+    if (canvas.width == 0u || canvas.tilemap == 0u) return false;
+    if (((cnt >> 14) & 3u) != 0u) return false;  // ring must be 32x32
     const uint32_t sb_addr =
-        0x06000000u + ((cnt >> 8) & 31u) * 0x800u;  // screenblock base
-    const uint16_t scroll_x =
-        bus_read_u16(kBackgrounds + 0x40u * layer + kBgScrollXOff);
-    const uint16_t scroll_y =
-        bus_read_u16(kBackgrounds + 0x40u * layer + kBgScrollYOff);
-
-    for (const uint16_t delta : kTileDeltas) {
-        int ok = 0, total = 0;
-        for (int sy = 0; sy < 160 && total < 32; sy += 56) {
-            for (int sx = 8; sx < 240; sx += 48) {
-                const int mc = static_cast<int>(
-                    (scroll_x + static_cast<uint16_t>(sx)) >> 3);
-                const int mr = static_cast<int>(
-                    (scroll_y + static_cast<uint16_t>(sy)) >> 3);
-                const uint16_t canvas_tile = canvas_tile_at(canvas, mc, mr);
-                const uint32_t ring_off =
-                    2u * static_cast<uint32_t>(((mr & 31) << 5) | (mc & 31));
-                const uint16_t ring_entry = bus_read_u16(sb_addr + ring_off);
-                const uint16_t want =
-                    static_cast<uint16_t>(((canvas_tile & 0x3FFu) + delta) & 0x3FFu);
-                if ((ring_entry & 0x3FFu) == want) ++ok;
-                ++total;
-            }
-        }
-        if (ok * 4u >= total * 3u) {  // ≥75% consistent
-            *out_delta = delta;
-            return true;
+        0x06000000u + ((cnt >> 8) & 31u) * 0x800u;
+    const int row0 = (static_cast<int>(scroll_y) >> 3) - static_cast<int>(d_row);
+    const int col0 = (static_cast<int>(scroll_x) >> 3) - static_cast<int>(d_col);
+    int ok = 0, total = 0;
+    for (uint32_t k = 0; k < 32 && total < 32; k += 3) {
+        for (uint32_t c0 = 0; c0 < 32 && total < 32; c0 += 3) {
+            const int crow = row0 + static_cast<int>(k);
+            const int ccol = col0 + static_cast<int>(c0);
+            if (crow < 0 || crow >= static_cast<int>(canvas.height)) continue;
+            if (ccol < 0 || ccol >= static_cast<int>(canvas.width)) continue;
+            const uint16_t cv = canvas_tile_at(canvas, ccol, crow) & 0x3FFu;
+            if (cv == 0u) continue;  // transparent can't verify
+            const uint16_t ring_entry = bus_read_u16(sb_addr +
+                2u * static_cast<uint32_t>((((d_row + k) & 31) << 5) | ((d_col + c0) & 31))) & 0x3FFu;
+            ++total;
+            if (ring_entry == cv) ++ok;
         }
     }
-    return false;
+    return total >= 8 && ok * 4u >= total * 3u;
+}
+
+// ── render-time cache ───────────────────────────────────────────────
+// The PPU runs inside the CPU's MMIO catch-up: a provider bus_read while
+// the PPU is mid-render re-enters render_scanline and overflows the stack
+// (observed with 896-wide margins). So the provider reads ONLY cached
+// state, all sampled once per frame in vblank_policy_hook.
+//
+// Band geometry: covers the canvas columns/rows the extended view can
+// reach this frame (≤ ceil(896/8)+1 cols × ceil(160/8)+1 rows).
+struct LayerFrame {
+    uint16_t cnt;
+    uint16_t scroll_x, scroll_y;
+    bool band_valid;
+    int16_t band_col0, band_cols;
+    int16_t band_row0, band_rows;
+    uint16_t entries[21][256];
+    int hwx_min, hwx_max;  // diagnostics: provider call range per frame
+    unsigned prov_calls;   // diagnostics: provider calls per frame
+};
+LayerFrame g_frame[4];
+constexpr int kBandColsCap = 256;   // full canvas width (mirror coverage)
+constexpr int kBandRowsCap = 21;
+
+int band_entry(const LayerFrame& f, int col, int row) {
+    const int ci = col - f.band_col0;
+    const int ri = row - f.band_row0;
+    if (ci < 0 || ci >= f.band_cols || ri < 0 || ri >= f.band_rows)
+        return -1;  // outside cached band (should never happen)
+    return f.entries[ri][ci];
+}
+
+        // Sample per-layer register state and the armed canvas band once per frame
+// (VBlank context: bus reads are safe there — no render is in progress).
+void refresh_frame_cache(void) {
+    // (re)bind hardware BG layers from the three struct Backgrounds; scroll
+    // and canvas come from the STRUCT, not from layer arithmetic.
+    static unsigned s_grind_frames = 0;
+    for (int s = 0; s < 3; ++s) {
+        const uint32_t sbase = kBackgrounds + 0x40u * s;
+        const uint16_t flags = bus_read_u16(sbase + 0x2Eu);
+        const uint32_t src = bus_read_u32(sbase + 0x10u);
+        const uint16_t cw = bus_read_u16(sbase + 0x14u);
+        const uint16_t ch = bus_read_u16(sbase + 0x16u);
+        const int hwL = flags & 3;
+        Calib& calib = g_calibs[hwL];
+        const bool valid = src != 0u && src != 0xFFFFFFFFu &&
+                           cw != 0u && cw <= 256u && ch != 0u && ch <= 256u &&
+                           (flags & kFlagChunked) == 0u;
+        const bool changed = !calib.armed ||
+            calib.canvas.tilemap != src ||
+            calib.canvas.width != cw || calib.canvas.height != ch;
+        if (!valid) {
+            if (calib.armed && g_ws_debug)
+                std::fprintf(stderr, "[ws-debug] BG%d UNARMED (src invalid)\n", hwL);
+            calib.armed = false;
+            continue;
+        }
+        calib.canvas = WideCanvas{cw, ch, src};
+        uint16_t scx = bus_read_u16(sbase + 0x30u);
+        uint16_t scy = bus_read_u16(sbase + 0x32u);
+        if (changed || !calib.armed) {
+            const uint16_t d_row = bus_read_u16(sbase + 0x24u);
+            const uint16_t d_col = bus_read_u16(sbase + 0x22u);
+            if (verify_ring_binding(static_cast<uint8_t>(hwL), calib.canvas,
+                                    scx, scy, d_row, d_col)) {
+                calib.armed = true;
+                if (g_ws_debug)
+                    std::fprintf(stderr,
+                        "[ws-debug] BG%d ARMED canvas %ux%u scr 0x%08x ring %ux%u\n",
+                        hwL, cw, ch, src, cw, ch);
+            } else {
+                if (g_ws_debug && (++s_grind_frames % 50u) == 1u)
+                    std::fprintf(stderr,
+                        "[ws-debug] BG%d bind struct=%d flags=0x%04x src=0x%08x %ux%u "
+                        "scroll=(%u,%u) verify FAIL\n",
+                        hwL, s, flags, src, cw, ch, scx, scy);
+                calib.armed = false;
+            }
+        }
+        // kill the [i]-slot frame scroll until the band fill below
+        (void)scx; (void)scy;
+    }
+
+    static unsigned s_dbg_frames = 0;
+    if (g_ws_debug && (++s_dbg_frames % 60u) == 0u) {
+        for (int l = 0; l < 4; ++l) {
+            std::fprintf(stderr,
+                "[ws-frame] f=%u authored=0x%x BG%d armed=%d cnt=0x%04x scroll=(%u,%u) "
+                "band_c=%d..%d hwx=%d..%d calls=%u\n",
+                s_dbg_frames, gba::g_ws_authored_margin_layers, l,
+                g_calibs[l].armed ? 1 : 0, g_frame[l].cnt,
+                g_frame[l].scroll_x, g_frame[l].scroll_y,
+                g_frame[l].band_col0, g_frame[l].band_cols,
+                g_frame[l].hwx_min, g_frame[l].hwx_max,
+                g_frame[l].prov_calls);
+        }
+    }
+    for (int l = 0; l < 4; ++l) {
+        LayerFrame& f = g_frame[l];
+        f.hwx_min = 0x7FFF; f.hwx_max = -0x8000; f.prov_calls = 0;
+        f.cnt = bus_read_u16(kRegBgcnt + 2u * l);
+        const Calib& c = g_calibs[l];
+        if (!c.armed || c.canvas.width == 0u || c.canvas.tilemap == 0u) {
+            f.band_valid = false;
+            continue;
+        }
+        // scroll from the struct slot that feeds this hardware layer
+        // (re-read the three bindings and remember their hwL assignment).
+        uint16_t scx = 0, scy = 0;
+        for (int s = 0; s < 3; ++s) {
+            const uint32_t sbase = kBackgrounds + 0x40u * s;
+            if ((bus_read_u16(sbase + 0x2Eu) & 3u) == l) {
+                scx = bus_read_u16(sbase + 0x30u);
+                scy = bus_read_u16(sbase + 0x32u);
+                break;
+            }
+        }
+        f.scroll_x = scx;
+        f.scroll_y = scy;
+        // Band covers the FULL canvas columns (mirror needs both edges),
+        // rows: the visible band only.
+        const int col0 = 0;
+        const int col1 = static_cast<int>(c.canvas.width) - 1;
+        const int row0 = static_cast<int>(scy) >> 3;
+        f.band_row0 = static_cast<int16_t>(row0);
+        f.band_rows = static_cast<int16_t>(kBandRowsCap);
+        f.band_col0 = static_cast<int16_t>(col0);
+        f.band_cols = static_cast<int16_t>(col1 - col0 + 1);
+        f.band_valid = true;
+        for (int r = 0; r < f.band_rows; ++r) {
+            const int row = row0 + r;
+            if (row >= static_cast<int>(c.canvas.height)) {
+                // beyond the canvas bottom: hide (no vertical margins today;
+                // the room's content simply ends).
+                for (int cc = 0; cc < f.band_cols; ++cc)
+                    f.entries[r][cc] = 0u;
+                continue;
+            }
+            uint32_t addr = c.canvas.tilemap +
+                2u * static_cast<uint32_t>(row * c.canvas.width + f.band_col0);
+            for (int cc = 0; cc < f.band_cols; ++cc, addr += 2u)
+                f.entries[r][cc] = bus_read_u16(addr);
+        }
+    }
 }
 
 // PPU tilemap provider: build a GBA entry for a margin column.
@@ -146,54 +282,75 @@ bool calibrate_layer(uint8_t layer, const WideCanvas& canvas,
 int wide_tilemap_provider(int bg, int hw_x, int screen_y, uint16_t* out_entry) {
     const int layer = bg & 3;
     const Calib& calib = g_calibs[layer];
-    if (!calib.armed) return 2;  // vanilla wrap fallback
+    LayerFrame& f = g_frame[layer];  // cached; NO bus reads here
+    if (hw_x < f.hwx_min) f.hwx_min = hw_x;
+    if (hw_x > f.hwx_max) f.hwx_max = hw_x;
+    ++f.prov_calls;
+    if (!calib.armed) {
+        // Layers without a verified canvas binding: foreground-ish (higher
+        // priority than any armed layer) would repeat their ring 256px-wide
+        // across the margins — skip the pixel so armed layers fill; anything
+        // behind keeps vanilla wrap (mostly hidden below armed layers).
+        const unsigned my_prio = f.cnt & 3u;
+        for (int other = 0; other < 4; ++other) {
+            if (other == layer || !g_calibs[other].armed) continue;
+            if (my_prio < (g_frame[other].cnt & 3u))
+                return 0;  // margins: let armed layer fill
+        }
+        return 2;  // vanilla wrap fallback
+    }
 
-    const uint16_t scroll_x =
-        bus_read_u16(kBackgrounds + 0x40u * layer + kBgScrollXOff);
-    const uint16_t scroll_y =
-        bus_read_u16(kBackgrounds + 0x40u * layer + kBgScrollYOff);
-    // Signed math: hw_x may be negative (left margin). Canvas wrap is
-    // handled by canvas_tile_at's modulo.
-    const int col = (static_cast<int>(scroll_x) + hw_x) >> 3;
-    const int row = (static_cast<int>(scroll_y) + screen_y) >> 3;
-    const uint16_t entry = canvas_tile_at(calib.canvas, col, row);
-    if (entry == 0u) return 0;  // canvas says transparent → skip (BG behind).
+    // Signed math: hw_x may be negative (left margin). Coordinates beyond
+    // the canvas edges mirror the edge region (last tiles reflected), so
+    // the margin reads like a wall/curtain, not a repeated copy of the map.
+    const int col = (static_cast<int>(f.scroll_x) + hw_x) >> 3;
+    const int row = (static_cast<int>(f.scroll_y) + screen_y) >> 3;
+    int cc = col;
+    const int w = static_cast<int>(calib.canvas.width);
+    if (w > 0) {
+        if (cc < 0) {
+            // left mirror: -1 → 0, -2 → 1 … (reflect at the left border)
+            const int span = 2 * w;
+            cc = (-cc) % span;                // 1..span-1 …
+            if (cc >= w) cc = span - 1 - cc;  // fall back inside left part
+            if (cc < 0) cc = 0;
+        } else if (cc >= w) {
+            // right mirror: W → W-1, W+1 → W-2 … cyclic when very wide
+            const int span = 2 * w;
+            const int d = (cc - w) % span;    // 0..2w-1
+            cc = d < w ? (w - 1 - d) : (d - w);
+        }
+    }
+    const int entry = band_entry(f, cc, row);
+    if (entry < 0) {
+        // Mirror coords that fall outside the cached band (band clamps to
+        // the canvas edge columns) — degrade to the exact edge column.
+        const int ec = (col < 0) ? 0 : (w > 0 ? w - 1 : 0);
+        const int e2 = band_entry(f, ec, row);
+        if (e2 < 0) return 2;  // cache miss → vanilla behaviour
+        if (e2 == 0) return 0; // canvas transparent → skip (BG behind)
+        *out_entry = static_cast<uint16_t>(e2);
+        return 1;
+    }
+    if (entry == 0) return 0;   // canvas transparent → skip (BG behind)
 
-    const uint16_t tile = static_cast<uint16_t>(
-        ((entry & 0x3FFu) + calib.tile_delta) & 0x3FFu);
-    *out_entry = static_cast<uint16_t>((entry & 0xFC00u) | tile);
+    // Verbatim DMA model: the copier stores the source entry as-is, so the
+    // returned entry keeps its own palette bank + flip bits.
+    *out_entry = static_cast<uint16_t>(entry);
     return 1;
 }
 
 // ── per-frame sync (hooked at gf_VBlankIntr entry) ──────────────────
-WideCanvas g_last_canvas{0, 0, 0};
+// g_ws_debug moved to top-level globals
 void vblank_policy_hook(uint32_t entry_pc) {
     if (entry_pc != kVBlankIntrPc) return;
     gba::g_ws_pillarbox = (g_mode == MarginMode::kBlack) ? 1 : 0;
     if (g_mode != MarginMode::kWide) return;
 
-    const WideCanvas fg = read_canvas(kCanvasFg);
-    const bool room_changed =
-        (fg.tilemap != g_last_canvas.tilemap ||
-         fg.width != g_last_canvas.width ||
-         fg.height != g_last_canvas.height);
-    if (room_changed) for (int l = 0; l < 4; ++l) g_calibs[l].armed = false;
-    g_last_canvas = fg;
-
-    for (int l = 0; l < 4; ++l) {
-        Calib& calib = g_calibs[l];
-        if (calib.armed) {
-            // Keep the canvas reference fresh (layer may re-point).
-            calib.canvas = fg;
-            continue;
-        }
-        uint16_t delta = 0;
-        if (calibrate_layer(static_cast<uint8_t>(l), fg, &delta)) {
-            calib.armed = true;
-            calib.canvas = fg;
-            calib.tile_delta = delta;
-        }
-    }
+    // Refresh the render-time cache BEFORE the PPU draws this frame's
+    // margins (providers must not touch the bus mid-render). Binding,
+    // verification and the canvas band all happen here.
+    refresh_frame_cache();
 }
 
 int requested_width() {
@@ -225,6 +382,12 @@ void activate_widescreen(void) {
     const int width = requested_width();
     g_left = (width - kNativeWidth) / 2;
     g_mode = parse_margin_mode();
+    // Declare all regular BG layers as provider-authored in the margins:
+    // without this the guest's WIN0/WIN1 window masks gate the margin
+    // pixels BEFORE the tilemap provider runs (armed layers would never be
+    // asked for extended columns). Providers still fail closed per layer.
+    gba::g_ws_authored_margin_layers = 0xF;
+    g_ws_debug = (std::getenv("GBARECOMP_WS_DEBUG") != nullptr);
 
     gba_mod_set_view_width(width);
     gba::g_ws_bg_x_provider = nullptr;
@@ -255,6 +418,7 @@ void reset_widescreen(void) {
     gba::g_ws_bg_x_provider = nullptr;
     gba::g_ws_pillarbox = 0;
     gba::g_ws_tilemap_provider = nullptr;
+    gba::g_ws_authored_margin_layers = 0;
     for (int l = 0; l < 4; ++l) g_calibs[l].armed = false;
     gba_mod_set_view_width(0);
     gba_mod_set_adaptive_view_enabled(0);

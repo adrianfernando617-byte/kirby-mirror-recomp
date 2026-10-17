@@ -32,9 +32,21 @@ default_enabled = true
 feature = "widescreen"
 id = "width"
 label = "Logical width"
-description = "Extended view width. 304 keeps 4 extra 8px tile-columns per side (matches the BG ring stride)."
+description = "Extended logical view width, up to the engine ceiling of 896px (~3.7 native screens; the runner letterboxes to the window aspect). Rooms with wide room-canvases fill it with real map content; beyond the canvas, margins repeat the room's own edge wall."
 type = "choice"
-default = "304"
+default = "896"
+
+[[option.choice]]
+value = "896"
+label = "896 (máximo da engine — 32:9)"
+
+[[option.choice]]
+value = "608"
+label = "608 (ultrawide 21:9+)"
+
+[[option.choice]]
+value = "426"
+label = "426 (2x a tela do GBA)"
 
 [[option.choice]]
 value = "304"
