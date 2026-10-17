@@ -1,0 +1,53 @@
+# kirby-mirror.display — built-in display package.
+#
+# Preloaded package (copied beside the executable by the build) for the
+# declarative mod catalog. Trusted plugin lives in the game binary:
+# src/mod_widescreen.cpp (plugin id "kirby-mirror.widescreen").
+#
+# The game_id/rom_sha1 pair must match RunOptions::mod_game_id and the
+# USA stock image hash. ROM bytes are never installed or redistributed.
+
+format_version = 1
+id = "kirby-mirror.display"
+version = "1.0.0"
+name = "Kirby Mirror Display Enhancements"
+author = "KirbyMirrorRecomp contributors"
+description = "Presentation features for Kirby & The Amazing Mirror (USA)."
+license = "MIT"
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "kirby-amazing-mirror-us"
+rom_sha1 = "274b102b6d940f46861a92b4e65f89a51815c12c"
+
+[[feature]]
+id = "widescreen"
+name = "Widescreen"
+description = "Extend the logical view beyond the native 240px width. Margin content still streams from the game's own tile ring; expect edges that mirror the visible floor until authored margin rendering lands."
+group = "Display"
+default_enabled = true
+
+[[option]]
+feature = "widescreen"
+id = "width"
+label = "Logical width"
+description = "Extended view width. 304 keeps 4 extra 8px tile-columns per side (matches the BG ring stride)."
+type = "choice"
+default = "304"
+
+[[option.choice]]
+value = "304"
+label = "304 (margens de 4 tiles por lado)"
+
+[[option.choice]]
+value = "284"
+label = "284 (16:9 exato)"
+
+[[option.choice]]
+value = "240"
+label = "240 (padrão do console)"
+
+[[plugin]]
+feature = "widescreen"
+id = "kirby-mirror.widescreen"
