@@ -1,0 +1,45 @@
+# game.toml — Kirby & The Amazing Mirror (GBA, USA)
+#
+# Runner config, no formato do MinishCapRecomp. A config do
+# RECOMPILADOR é a katam_recomp.toml (+ overlay symbols/KATAM_symbols.toml).
+
+[game]
+name           = "Kirby & The Amazing Mirror"
+short_name     = "kirby_mirror"
+default_region = "usa"
+
+# BIOS real, executado de verdade. O usuário fornece o arquivo.
+[bios]
+path = "gbarecomp/bios/gba_bios.bin"
+sha1 = "300c20df6731a33952ded8c436f7f186d25d3492"
+
+# ROM do usuário (não versionada). Hash porta o runtime.
+[rom]
+path = "roms/kirby_usa.gba"
+# sha1 por região em config/<region>.toml (usa: 274b102b...)
+
+[recompiler]
+entry_point   = "0x08000000"
+seeds         = "symbols/imported_symbols.tsv"
+boundaries    = "symbols/function_boundaries.tsv"
+out_dir       = "generated"
+strict        = true
+
+# gba_scan detectou a assinatura "SRAM_V" @ 0x0d608a0 no ROM.
+[save]
+type = "sram"
+
+[runtime]
+debug_port   = 19853
+window_title = "KirbyMirrorRecomp"
+
+[video]
+screen = "frontlit"
+
+[audio]
+shadow = true
+
+# Funções extras descobertas em runtime (dispatch misses) entram aqui.
+[functions]
+arm   = []
+thumb = []

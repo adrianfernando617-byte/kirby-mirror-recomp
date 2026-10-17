@@ -1,0 +1,30 @@
+# Build artifacts
+build/
+
+# Generated code — regenerated from the user's own ROM with
+# gbarecomp/tools + symbols/ (see README). Never redistributed.
+generated/
+recomp_cache/
+recomp_coverage_*.json
+
+# Diagnostic replays and runtime caches
+diagnostics/
+
+# User-owned game files — never commit these
+*.gba
+*.sav
+roms/
+bios/
+
+# Derivable dumps (regenerate with readelf from your katam build)
+symbols/katam_readelf_syms.txt
+
+# Mod runtime persisted selections (per-machine)
+mods/state.toml
+mods/state.toml.tmp
+mods/state.toml.bak
+
+# Editor junk
+.vscode/
+.idea/
+*.swp

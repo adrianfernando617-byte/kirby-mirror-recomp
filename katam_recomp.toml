@@ -1,0 +1,28 @@
+# katam_recomp.toml — config base do gba_recompile para
+# Kirby & The Amazing Mirror (USA).
+#
+# Hand-authored seguindo o TOML_SCHEMA do gbarecomp. O overlay
+# symbols/KATAM_symbols.toml (gerado pelo import_decomp_symbols.py
+# a partir do katam.elf / katam.map) é passado como segundo --config.
+#
+# Evidência:
+#   - entry: asm/crt0.s __start @ 0x08000000 (b _080000C0); a chamada
+#     real de AgbMain é feita no crt0, mas o seed é o vetor de entrada.
+#   - header ROM (logo/checksum) = dados: 0x08000004..0x080000C0.
+#   - iwram/ewram do linker.ld são NOLOAD (sem code_copy).
+
+[program]
+name         = "Kirby & The Amazing Mirror (USA)"
+id           = "katam"
+load_address = 0x08000000
+size         = 0x01000000
+entry_pc     = 0x08000000
+codegen_shards = 16
+
+[identity]
+sha1 = "274b102b6d940f46861a92b4e65f89a51815c12c"
+
+[[data_range]]
+start = 0x08000004
+end   = 0x080000C0
+note  = "GBA ROM header e bytes do Nintendo logo"

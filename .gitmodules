@@ -1,0 +1,3 @@
+[submodule "gbarecomp"]
+	path = gbarecomp
+	url = https://github.com/adrianfernando617-byte/gbarecomp.git
