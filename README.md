@@ -19,7 +19,7 @@ andamento.
 | Save (SRAM) | ✅ automático em `<rom>.sav` |
 | Áudio | ✅ (mixer sombra MP2K; alguns drivers caem para mix de hardware) |
 | Controles | teclado + gamepad (SDL) |
-| Widescreen | ✅ mod v2 (view estendida +policy de margem) ativo por padrão |
+| Widescreen | ✅ mod v3 (mapa real nas margens — `wide` por padrão) |
 | Netplay 2–4P | 📋 planejado (infra existe no runtime) |
 | Margens autorais (mundo vizinho) | 📋 fase 3 do widescreen |
 
@@ -117,13 +117,23 @@ Opção `margins` (como as colunas extras são preenchidas):
 
 | valor | efeito |
 |---|---|
-| `wrap` (padrão) | margens mostram o anel de tiles do próprio jogo (repete a borda da sala) |
-| `clamp` | margens continuam a coluna nativa mais próxima (host-side; o guest fica intocado) |
+| `wide` (padrão) | **margens mostram o mapa real da sala** — o canvas da sala (RoomTiledBG em RAM, maior que a tela) é amostrado host-side além dos 240px: conteúdo que o GBA nunca exibiria |
+| `wrap` | margens mostram o anel de tiles do próprio jogo (repete a borda — aparência das salas unitais) |
+| `clamp` | margens continuam a coluna nativa mais próxima |
 | `black` | pillarbox sólido |
 
+Como funciona o `wide`: cada sala do KAM carrega em RAM um canvas
+decodificado com as dimensões reais (ex.: hub com 62×46 tiles). O plugin
+(amarrado ao `g_ws_tilemap_provider` do runtime) lê esse canvas por frame
+e calibra ao vivo o mapeamento canvas↔VRAM de cada camada de hardware,
+comparando o anel visível contra o canvas com deltas candidatos; só
+"arma" a camada quando ≥75% dos pontos casam — salas/menus sem canvas
+largo caem no fallback `wrap` (fail-closed). Tiles transparentes
+(`0000`) contam como transparentes.>
+
 A política é reafirmada por frame (hook na `gf_VBlankIntr`) sobrevivendo
-a savestates. Auditoria e roadmap (fase 3 = conteúdo do mundo vizinho via
-grafo de portas) em `docs/audit/bg-widescreen.md`.
+a savestates. Auditoria e roadmap (grafo de portas, salas vizinhas) em
+`docs/audit/bg-widescreen.md`.
 
 ## Estrutura do repo
 
