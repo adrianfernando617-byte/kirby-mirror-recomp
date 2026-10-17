@@ -24,7 +24,7 @@ rom_sha1 = "274b102b6d940f46861a92b4e65f89a51815c12c"
 [[feature]]
 id = "widescreen"
 name = "Widescreen"
-description = "Extend the logical view beyond the native 240px width. Margin content still streams from the game's own tile ring; expect edges that mirror the visible floor until authored margin rendering lands."
+description = "Extend the logical view beyond the native 240px width. Margin presentation is owned by the trusted plugin: wrap (vanilla tile ring), clamp (continue the nearest native column) or black (solid pillars)."
 group = "Display"
 default_enabled = true
 
@@ -47,6 +47,26 @@ label = "284 (16:9 exato)"
 [[option.choice]]
 value = "240"
 label = "240 (padrão do console)"
+
+[[option]]
+feature = "widescreen"
+id = "margins"
+label = "margin policy"
+description = "How margin columns render: wrap repeats the guest tile ring (vanilla look); clamp continues the nearest native column (host-side, guest untouched); black draws solid margins."
+type = "choice"
+default = "wrap"
+
+[[option.choice]]
+value = "wrap"
+label = "wrap (anel do jogo)"
+
+[[option.choice]]
+value = "clamp"
+label = "clamp (continua a coluna da borda)"
+
+[[option.choice]]
+value = "black"
+label = "black (pillarbox sólido)"
 
 [[plugin]]
 feature = "widescreen"

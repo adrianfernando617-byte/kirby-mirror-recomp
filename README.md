@@ -19,9 +19,9 @@ andamento.
 | Save (SRAM) | ✅ automático em `<rom>.sav` |
 | Áudio | ✅ (mixer sombra MP2K; alguns drivers caem para mix de hardware) |
 | Controles | teclado + gamepad (SDL) |
-| Widescreen | 🟡 mod básico (view estendida) ativo por padrão |
+| Widescreen | ✅ mod v2 (view estendida +policy de margem) ativo por padrão |
 | Netplay 2–4P | 📋 planejado (infra existe no runtime) |
-| Margens com conteúdo | 📋 próxima fase do widescreen |
+| Margens autorais (mundo vizinho) | 📋 fase 3 do widescreen |
 
 Bugs e limitações conhecidos são acompanhados em
 [Issues](https://github.com/adrianfernando617-byte/kirby-mirror-recomp/issues).
@@ -102,19 +102,28 @@ cmake --build build -j$(nproc)
 
 Gamepad: mapeado automaticamente (testado com DualShock 4).
 
-## Widescreen (mod básico)
+## Widescreen (mod v2)
 
 O runtime tem um subsistema declarativo de mods (docs:
-`gbarecomp/docs/MOD_PACKAGES.md`). O mod inicial `kirby-mirror.display`
-está **ativo por padrão** e estende a view lógica para **304px** (240
-nativos + 4 tiles de margem por lado). A largura é uma opção do package
-(manifest) e o estado fica em `build/mods/state.toml`.
+`gbarecomp/docs/MOD_PACKAGES.md`). O mod `kirby-mirror.display` está
+**ativo por padrão** e estende a view lógica para **304px** (240
+nativos + 4 tiles de margem por lado). A largura e a política de margem
+são opções do package (manifest) e o estado fica em `build/mods/state.toml`
+(rodando pela janela: opções editáveis no menu de mods do launcher).
 
-O conteúdo das margens ainda vem do anel de tiles do próprio jogo
-(reproduz a última fileira visível); uma fase seguinte do mod renderiza
-conteúdo autoral nas margens (mundo estendido, HUD centrado e pillarbox
-em menus — o BG de HUD é uma camada separada, o BG0, e tolera pillarbox
-limpo).
+Opção `width`: `304` (padrão), `284` (16:9 exato), `240` (console).
+
+Opção `margins` (como as colunas extras são preenchidas):
+
+| valor | efeito |
+|---|---|
+| `wrap` (padrão) | margens mostram o anel de tiles do próprio jogo (repete a borda da sala) |
+| `clamp` | margens continuam a coluna nativa mais próxima (host-side; o guest fica intocado) |
+| `black` | pillarbox sólido |
+
+A política é reafirmada por frame (hook na `gf_VBlankIntr`) sobrevivendo
+a savestates. Auditoria e roadmap (fase 3 = conteúdo do mundo vizinho via
+grafo de portas) em `docs/audit/bg-widescreen.md`.
 
 ## Estrutura do repo
 

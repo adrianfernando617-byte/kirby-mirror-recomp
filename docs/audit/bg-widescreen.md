@@ -59,6 +59,46 @@ família `gf_AreaMap*` (mapa de espelhos).
    `gba_mod_set_view_width`. Margens v1 = conteúdo do anel do próprio
    jogo (repetição da borda) — inofensivo e sem quebrar o HUD (BG0
    rende normal).
-4. Margens autorais (fase 2): hook no streaming
-   (0x08156266/0x08156E58) para materializar colunas extras + pillarbox
-   por cena via `presentation_request` (menus, batalhas).
+4. Fase 2 implementada (plugin v2, `src/mod_widescreen.cpp`):
+   - **Opção `margins`** no manifesto (`wrap` | `clamp` | `black`),
+     persistida no roundtrip do `state.toml`.
+   - `wrap` (default): anel do próprio jogo como em v1.
+   - `clamp`: o plugin instala `gba::g_ws_bg_x_provider` (host, read-only)
+     e a margem continua exatamente a coluna nativa mais próxima
+     (`sample_hx` fixo em `left`/`left+239`) — mata a repetição
+     espelhada (a margem direita em wrap mostrava a borda esquerda da
+     sala; medido com kirby andando no lobby: BG2 hofs 0→1→0, câmera
+     travada por sala).
+   - `black`: `gba::g_ws_pillarbox = 1` (pillarbox sólido).
+   - **Gancho por frame**: o plugin arma `g_runtime_fn_entry_hook` e
+     reafirma a política na entrada de `gf_VBlankIntr` (0x08152388;
+     correção do endereço vs. nota acima: symbol_map aponta `0x08152388`,
+     o `0x08152368` era a função vizinha), sobrevivendo ao fail-closed
+     do pillarbox que o PPU recompõe ao carregar savestate
+     (`gba_ppu.cpp:159`).
+
+## Assinaturas de IO por cena (sondadas por TCP, build headless `--tcp`)
+
+| Cena | DISPCNT (camadas) | Seats BG0..3 | Nota |
+|---|---|---|---|
+| Boot logos | — | — | pillarbox perfeito |
+| File/Game select | BG0,1,2 on; BG3 off | 31/30/29 | WINOUT `00bf` |
+| Cutscene/intro | **só BG2 + OBJ** | 30 | WINOUT `0000` |
+| Sala de campo c/ HUD | BG0,1,3 on; BG2 off | 7/15/23/30 (tutorial) | seats variam por sala |
+| Sala Rainbow (HUD) | BG0,1,3 on; BG2 off | var | HUD ok em wide |
+
+A camada HUD não é sempre BG0 (na sala inicial era BG1) — **não** usar
+DISPCNT como discriminador campo/menu. Câmera travada dentro de salas
+(hofs 0/1), margens = borda repetida da mesma sala em wrap; sprites
+(c/ X com sinal de 9 bits) continuam visíveis nas margens.
+
+## Fase 3 (roadmap margens autorais)
+
+Margem com conteúdo do **mundo vizinho** (grafo de portas do KAM:
+salas conectadas por teleporte, não por adjacência em memória):
+1. RE da rotina de desenho de metatiles (equiv. `DrawMetatileAt` do
+   FireRed) e dos buffers residentes da sala;
+2. adaptar o modelo do `ws_sidecar` (anel slot↔tile-mundo + cache
+   estendido 64x32 + `g_ws_tilemap_provider`);
+3. materializar salas vizinhas chamando a própria rotina do guest em
+   scratch IWRAM (tail `0x03006CC4..0x03008000`, ~5,3 KB).
