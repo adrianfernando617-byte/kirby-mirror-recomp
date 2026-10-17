@@ -52,9 +52,13 @@ label = "240 (padrão do console)"
 feature = "widescreen"
 id = "margins"
 label = "margin policy"
-description = "How margin columns render: wrap repeats the guest tile ring (vanilla look); clamp continues the nearest native column (host-side, guest untouched); black draws solid margins."
+description = "How margin columns render: wide shows real map content beyond the screen (the room canvas, read host-side); wrap repeats the guest tile ring; clamp continues the nearest native column; black draws solid margins."
 type = "choice"
-default = "wrap"
+default = "wide"
+
+[[option.choice]]
+value = "wide"
+label = "wide (mapa real além da tela)"
 
 [[option.choice]]
 value = "wrap"
