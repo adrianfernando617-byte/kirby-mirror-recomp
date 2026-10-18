@@ -145,13 +145,31 @@ struct LayerFrame {
     bool band_valid;
     int16_t band_col0, band_cols;
     int16_t band_row0, band_rows;
-    uint16_t entries[21][256];
+    uint16_t entries[116][256];
     int hwx_min, hwx_max;  // diagnostics: provider call range per frame
     unsigned prov_calls;   // diagnostics: provider calls per frame
 };
 LayerFrame g_frame[4];
 constexpr int kBandColsCap = 256;   // full canvas width (mirror coverage)
-constexpr int kBandRowsCap = 21;
+constexpr int kBandRowsCap = 116;   // full engine height: (240..864)/8 + slack
+
+// Vertical reflection helper: negative rows reflect at the canvas top edge,
+// rows beyond the bottom edge at the bottom — margin rows read like a wall.
+int vmirror(int row, int h) {
+    if (h <= 0) return 0;
+    if (row < 0) {
+        const int span = 2 * h;
+        int r = (-row) % span;
+        if (r >= h) r = span - 1 - r;  // fall back inside the top edge
+        return r;
+    }
+    if (row >= h) {
+        const int span = 2 * h;
+        const int d = (row - h) % span;
+        return d < h ? (h - 1 - d) : (d - h);
+    }
+    return row;
+}
 
 int band_entry(const LayerFrame& f, int col, int row) {
     const int ci = col - f.band_col0;
@@ -249,27 +267,26 @@ void refresh_frame_cache(void) {
         }
         f.scroll_x = scx;
         f.scroll_y = scy;
-        // Band covers the FULL canvas columns (mirror needs both edges),
-        // rows: the visible band only.
+        // Band covers the FULL canvas columns (mirror needs both edges) and
+        // the rows the vertical margins can reach (v5 fill: host top/bottom
+        // extras). Negative/extra rows are pre-mirrored into the band so the
+        // provider only slices it — no reflection math at render time.
+        const int extra_top = static_cast<int>(gba::g_ws_extra_top);
+        const int extra_bottom = static_cast<int>(gba::g_ws_extra_bottom);
         const int col0 = 0;
         const int col1 = static_cast<int>(c.canvas.width) - 1;
         const int row0 = static_cast<int>(scy) >> 3;
-        f.band_row0 = static_cast<int16_t>(row0);
-        f.band_rows = static_cast<int16_t>(kBandRowsCap);
+        f.band_row0 = static_cast<int16_t>(row0 - (extra_top + 7) / 8);
+        f.band_rows = static_cast<int16_t>(
+            ((extra_top + 160 + extra_bottom) / 8 + 3));
         f.band_col0 = static_cast<int16_t>(col0);
         f.band_cols = static_cast<int16_t>(col1 - col0 + 1);
         f.band_valid = true;
         for (int r = 0; r < f.band_rows; ++r) {
-            const int row = row0 + r;
-            if (row >= static_cast<int>(c.canvas.height)) {
-                // beyond the canvas bottom: hide (no vertical margins today;
-                // the room's content simply ends).
-                for (int cc = 0; cc < f.band_cols; ++cc)
-                    f.entries[r][cc] = 0u;
-                continue;
-            }
+            const int mrow = vmirror(f.band_row0 + r,
+                                     static_cast<int>(c.canvas.height));
             uint32_t addr = c.canvas.tilemap +
-                2u * static_cast<uint32_t>(row * c.canvas.width + f.band_col0);
+                2u * static_cast<uint32_t>(mrow * c.canvas.width + f.band_col0);
             for (int cc = 0; cc < f.band_cols; ++cc, addr += 2u)
                 f.entries[r][cc] = bus_read_u16(addr);
         }
@@ -390,6 +407,11 @@ void activate_widescreen(void) {
     g_ws_debug = (std::getenv("GBARECOMP_WS_DEBUG") != nullptr);
 
     gba_mod_set_view_width(width);
+    // v5 fill: the adaptive (resize-driven) view owns the live geometry —
+    // window aspect drives both the width and the height (engine vertical
+    // extension, opt-in via opts.max_resize_view_height). The fixed width
+    // above remains only the boot-time base.
+    gba_mod_set_adaptive_view_enabled(1);
     gba::g_ws_bg_x_provider = nullptr;
     gba::g_ws_tilemap_provider = nullptr;
     switch (g_mode) {

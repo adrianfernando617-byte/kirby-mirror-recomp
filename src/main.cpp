@@ -51,6 +51,14 @@ int main(int argc, char** argv) {
     // 896 = engine storage limit (240 native + 2*328 margins); rooms with
     // wide canvases (up to 242 tiles = 1936px) supply real content.
     opts.max_view_width = 896;
+    // Adaptive view: width follows the window. Vertical fill silently stays
+    // OFF for now: the room-canvas gamma margins don't cover sprites (the
+    // guest's logic still lives in the native 240x160 box), so extended rows
+    // exposed idle artifacts and cut the frame rate in half. Reenable by
+    // raising max_resize_view_height once guest-logic wide (phase 5) lands.
+    opts.resize_driven_view      = true;
+    opts.max_resize_view_width   = 896;
+    opts.max_resize_view_height  = 160;
     opts.launcher_region    = "USA";
     opts.launcher_game_config = "game.toml";
 
